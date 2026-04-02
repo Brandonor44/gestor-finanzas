@@ -1,9 +1,8 @@
 import streamlit as st
 from supabase import create_client, Client
-import plotly.express as px
 import pandas as pd
 import datetime
-from calendar import monthrange, month_name
+from calendar import monthrange
 
 # --- INICIALIZAR MEMORIA TEMPORAL ---
 if 'confirmando' not in st.session_state:
@@ -28,17 +27,13 @@ st.title("🚀 Sistema de Gestión Financiera - Brandon Edition")
 st.sidebar.header("📅 Filtro de Periodo")
 hoy = datetime.date.today()
 
-# Creamos una lista de meses en español para el selector
 meses_nombres = ["Enero", "Febrero", "Marzo", "Abril", "Mayo", "Junio", 
                  "Julio", "Agosto", "Septiembre", "Octubre", "Noviembre", "Diciembre"]
 
 mes_sel_nombre = st.sidebar.selectbox("Selecciona el Mes:", meses_nombres, index=hoy.month - 1)
 anio_sel = st.sidebar.number_input("Año:", min_value=2024, max_value=2030, value=hoy.year)
 
-# Convertimos el nombre del mes a número (Enero -> 1)
 mes_idx = meses_nombres.index(mes_sel_nombre) + 1
-
-# Calculamos rango de fechas para el filtro SQL
 primer_dia_filtro = datetime.date(anio_sel, mes_idx, 1)
 ultimo_dia_filtro = datetime.date(anio_sel, mes_idx, monthrange(anio_sel, mes_idx)[1])
 
@@ -54,46 +49,7 @@ def obtener_categorias(tipo):
         res = supabase.table("categorias").select("id, nombre").eq("nivel", 4).execute()
     return {item['nombre']: item['id'] for item in res.data}
 
-def mostrar_metricas(f_inicio, f_fin):
-    res = supabase.table("registros").select("importe, categoria_id").gte("fecha", str(f_inicio)).lte("fecha", str(f_fin)).execute()
-    
-    cat_ingresos = supabase.table("categorias").select("id").eq("id_padre", 1).execute()
-    ids_ingresos = [c['id'] for c in cat_ingresos.data]
-    
-    total_ingresos = sum(r['importe'] for r in res.data if r['categoria_id'] in ids_ingresos)
-    total_gastos = sum(r['importe'] for r in res.data if r['categoria_id'] not in ids_ingresos)
-    balance = total_ingresos - total_gastos
-    
-    col1, col2, col3 = st.columns(3)
-    col1.metric(f"🟢 Ingresos ({mes_sel_nombre})", f"{total_ingresos:,.2f} €")
-    col2.metric(f"🔴 Gastos ({mes_sel_nombre})", f"{total_gastos:,.2f} €")
-    col3.metric("⚖️ Resultado Neto", f"{balance:,.2f} €")
-
-def mostrar_graficos(f_inicio, f_fin):
-    res = (supabase.table("registros")
-           .select("importe, categoria_id, categorias(nombre)")
-           .gte("fecha", str(f_inicio)).lte("fecha", str(f_fin))
-           .execute())
-    
-    if res.data:
-        cat_ingresos = supabase.table("categorias").select("id").eq("id_padre", 1).execute()
-        ids_ingresos = [c['id'] for c in cat_ingresos.data]
-        
-        gastos_data = [{"Categoría": r['categorias']['nombre'], "Importe": r['importe']} 
-                       for r in res.data if r['categoria_id'] not in ids_ingresos]
-        
-        if gastos_data:
-            df_resumen = pd.DataFrame(gastos_data).groupby("Categoría")["Importe"].sum().reset_index()
-            fig = px.pie(df_resumen, values='Importe', names='Categoría', hole=0.5,
-                         title=f"📊 Gastos de {mes_sel_nombre}",
-                         color_discrete_sequence=px.colors.qualitative.Pastel)
-            fig.update_layout(showlegend=False, margin=dict(t=40, b=0, l=0, r=0))
-            st.plotly_chart(fig, use_container_width=True)
-        else:
-            st.info(f"No hay gastos registrados en {mes_sel_nombre}.")
-
 # --- RENDERIZADO PRINCIPAL ---
-mostrar_metricas(primer_dia_filtro, ultimo_dia_filtro)
 st.divider()
 
 col_izq, col_der = st.columns([1, 1], gap="large")
@@ -108,7 +64,6 @@ with col_izq:
         with col_a:
             concepto = st.text_input("Concepto", placeholder="nuevo registro")
             fecha = st.date_input("Fecha")
-            # <--- ¡NUEVO! Selector de pago añadido en la columna izquierda
             metodo = st.selectbox("Método de pago", options=["tarjeta", "efectivo"], index=0) 
             
         with col_b:
@@ -130,19 +85,88 @@ with col_izq:
                     "fecha": str(fecha), 
                     "tipo": tipo_mov, 
                     "detalles": detalles,
-                    "metodo_pago": metodo # <--- ¡NUEVO! Guardamos el método seleccionado
+                    "metodo_pago": metodo
                 }
                 st.session_state.confirmando = True
                 st.rerun()
 
 with col_der:
-    mostrar_graficos(primer_dia_filtro, ultimo_dia_filtro)
+    st.subheader(f"📊 Resumen de {mes_sel_nombre}")
+    
+    res_metricas = supabase.table("registros").select("importe, categoria_id").gte("fecha", str(primer_dia_filtro)).lte("fecha", str(ultimo_dia_filtro)).execute()
+    
+    if res_metricas.data:
+        cat_ingresos = supabase.table("categorias").select("id").eq("id_padre", 1).execute()
+        ids_ingresos = [c['id'] for c in cat_ingresos.data]
+        
+        total_ingresos = sum(r['importe'] for r in res_metricas.data if r['categoria_id'] in ids_ingresos)
+        total_gastos = sum(r['importe'] for r in res_metricas.data if r['categoria_id'] not in ids_ingresos)
+        balance = total_ingresos - total_gastos
+        
+        # Calculamos proporciones para las barras (evitando división por cero)
+        max_val = max(total_ingresos, total_gastos)
+        max_val = max_val if max_val > 0 else 1 
+        
+        pct_ingresos = min((total_ingresos / max_val) * 100, 100)
+        pct_gastos = min((total_gastos / max_val) * 100, 100)
+        pct_balance = min((abs(balance) / max_val) * 100, 100)
+        
+        # Color del balance (Verde si sobra, Rojo si estás en negativo)
+        color_balance = "#23b854" if balance >= 0 else "#ff4b4b"
 
+        # HTML renderizado de forma segura por Streamlit
+        st.markdown(f"""
+        <div style="margin-bottom: 15px;">
+            <div style="display: flex; justify-content: space-between; margin-bottom: 5px;">
+                <span style="font-size: 18px; font-weight: 500;">🟢 Ingresos</span>
+                <span style="font-size: 18px; font-weight: bold;">{total_ingresos:,.2f} €</span>
+            </div>
+            <div style="background-color: rgba(150, 150, 150, 0.2); border-radius: 6px; width: 100%; height: 12px;">
+                <div style="background-color: #23b854; width: {pct_ingresos}%; height: 100%; border-radius: 6px;"></div>
+            </div>
+        </div>
+        
+        <div style="margin-bottom: 15px;">
+            <div style="display: flex; justify-content: space-between; margin-bottom: 5px;">
+                <span style="font-size: 18px; font-weight: 500;">🔴 Gastos</span>
+                <span style="font-size: 18px; font-weight: bold;">{total_gastos:,.2f} €</span>
+            </div>
+            <div style="background-color: rgba(150, 150, 150, 0.2); border-radius: 6px; width: 100%; height: 12px;">
+                <div style="background-color: #ff4b4b; width: {pct_gastos}%; height: 100%; border-radius: 6px;"></div>
+            </div>
+        </div>
+        
+        <hr style="margin: 20px 0; border-color: rgba(150, 150, 150, 0.2);">
+        
+        <div style="margin-bottom: 10px;">
+            <div style="display: flex; justify-content: space-between; margin-bottom: 5px;">
+                <span style="font-size: 18px; font-weight: 500;">⚖️ Balance</span>
+                <span style="font-size: 18px; font-weight: bold; color: {color_balance};">{balance:,.2f} €</span>
+            </div>
+            <div style="background-color: rgba(150, 150, 150, 0.2); border-radius: 6px; width: 100%; height: 12px;">
+                <div style="background-color: {color_balance}; width: {pct_balance}%; height: 100%; border-radius: 6px;"></div>
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
+    else:
+        st.info("No hay registros en este periodo.")
+
+# --- ZONA DE CONFIRMACIÓN EN LISTA ---
 if st.session_state.confirmando:
     st.divider()
     d = st.session_state.datos_temp
-    # <--- ¡NUEVO! Añadido el método de pago al aviso de confirmación
-    st.warning(f"⚠️ Confirmar: {d['tipo']} - {d['concepto']} ({d['importe']}€) pagado en {d['metodo_pago'].upper()}")
+    
+    st.warning("⚠️ Revisa los datos antes de guardar:")
+    
+    st.markdown(f"""
+    - **Tipo:** {d['tipo']}
+    - **Concepto:** {d['concepto']}
+    - **Importe:** {d['importe']} €
+    - **Categoría:** {d['nombre_categoria']}
+    - **Fecha:** {d['fecha']}
+    - **Método de Pago:** {d['metodo_pago'].capitalize()}
+    - **Detalles:** {d['detalles'] if d['detalles'] else '-'}
+    """)
     
     col_ok, col_ko = st.columns([1, 5])
     with col_ok:
@@ -154,7 +178,7 @@ if st.session_state.confirmando:
                     "categoria_id": d['categoria_id'], 
                     "fecha": d['fecha'], 
                     "detalles": d['detalles'],
-                    "metodo_pago": d['metodo_pago'] # <--- ¡NUEVO! Lo inyectamos en Supabase
+                    "metodo_pago": d['metodo_pago']
                 }).execute()
                 
                 st.session_state.confirmando, st.session_state.datos_temp = False, None
@@ -173,11 +197,10 @@ st.divider()
 st.subheader(f"📋 Movimientos de {mes_sel_nombre}")
 
 def mostrar_tabla(f_inicio, f_fin):
-    # <--- ¡NUEVO! Añadimos metodo_pago a la consulta select de SQL
     res = (supabase.table("registros")
            .select("id, fecha, concepto, importe, detalles, metodo_pago, categoria_id, categorias(nombre)") 
            .gte("fecha", str(f_inicio)).lte("fecha", str(f_fin))
-           .order("id", desc=True).execute())
+           .order("fecha", desc=True).order("id", desc=True).execute())
     
     if res.data:
         cat_ingresos = supabase.table("categorias").select("id").eq("id_padre", 1).execute()
@@ -191,7 +214,7 @@ def mostrar_tabla(f_inicio, f_fin):
                 "Importe": f"{signo}{r['importe']} €",
                 "Fecha": r['fecha'], 
                 "Categoría": r['categorias']['nombre'],
-                "Pago": str(r.get('metodo_pago', 'tarjeta')).capitalize(), # <--- ¡NUEVO! Columna en la tabla
+                "Pago": str(r.get('metodo_pago', 'tarjeta')).capitalize(),
                 "Detalles": r.get('detalles', '')
             })
         
@@ -208,7 +231,7 @@ def mostrar_tabla(f_inicio, f_fin):
 mostrar_tabla(primer_dia_filtro, ultimo_dia_filtro)
 
 # --- ZONA DE PELIGRO ---
-with st.expander("⚠️ Zona de Revisión: Eliminar un registro"):
+with st.expander("⚠️ Zona de Peligro: Eliminar un registro"):
     res_del = supabase.table("registros").select("id, concepto, importe, fecha").order("id", desc=True).limit(10).execute()
     if res_del.data:
         opciones_borrar = {f"[{r['fecha']}] {r['concepto']} - {r['importe']}€ (ID: {r['id']})": r['id'] for r in res_del.data}
