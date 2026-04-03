@@ -199,10 +199,24 @@ with col_der:
     else:
         st.info("No hay registros en este periodo.")
 
+# --- ZONA DE CONFIRMACIÓN EN LISTA ---
 if st.session_state.confirmando:
     st.divider()
     d = st.session_state.datos_temp
     st.warning("⚠️ Revisa los datos antes de guardar:")
+    
+    # --- ESTE ES EL BLOQUE QUE ME HABÍA COMIDO ---
+    st.markdown(f"""
+    - **Tipo:** {d['tipo']}
+    - **Concepto:** {d['concepto']}
+    - **Importe:** {d['importe']} €
+    - **Categoría:** {d['nombre_categoria']}
+    - **Fecha:** {d['fecha']}
+    - **Método de Pago:** {d['metodo_pago'].capitalize()}
+    - **Detalles:** {d['detalles'] if d['detalles'] else '-'}
+    """)
+    # ---------------------------------------------
+    
     col_ok, col_ko = st.columns([1, 5])
     with col_ok:
         if st.button("Confirmar registro", type="primary"):
