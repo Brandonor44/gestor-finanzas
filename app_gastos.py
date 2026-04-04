@@ -34,7 +34,17 @@ if st.session_state.usuario_id is None:
     col_login, _ = st.columns([1, 2])
     with col_login:
         with st.form("login_form"):
-            usuario_sel = st.selectbox("Usuario", ["Brandon", "Invitado"])
+            # 1. Python le pregunta a Supabase quiénes son los usuarios actuales
+            res_usuarios = supabase.table("usuarios").select("nombre").execute()
+            
+            # 2. Extraemos solo los nombres y los metemos en una lista
+            if res_usuarios.data:
+                lista_usuarios = [u['nombre'] for u in res_usuarios.data]
+            else:
+                lista_usuarios = ["Sin usuarios"] # Por si la tabla está vacía
+            
+            # 3. El desplegable se construye solo con esa lista dinámica
+            usuario_sel = st.selectbox("Usuario", lista_usuarios)
             pin = st.text_input("PIN de acceso", type="password")
             submit_login = st.form_submit_button("Entrar", type="primary")
             
