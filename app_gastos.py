@@ -13,16 +13,53 @@ if 'mensaje_exito' not in st.session_state:
     st.session_state.mensaje_exito = None
 if 'form_key' not in st.session_state:
     st.session_state.form_key = 0
+if 'id_a_borrar' not in st.session_state:
+    st.session_state.id_a_borrar = None
+if 'usuario_id' not in st.session_state:
+    st.session_state.usuario_id = None
+if 'usuario_nombre' not in st.session_state:
+    st.session_state.usuario_nombre = None
 
-st.set_page_config(page_title="Finanzas Brandon", page_icon="💰", layout="wide")
+st.set_page_config(page_title="Finanzas App", page_icon="💰", layout="wide")
 
 url = st.secrets["SUPABASE_URL"]
 key = st.secrets["SUPABASE_KEY"]
 supabase: Client = create_client(url, key)
 
-st.title("🚀 Sistema de Gestión Financiera - Brandon Edition")
+# --- SISTEMA DE LOGIN (PUERTA DE ACCESO) ---
+if st.session_state.usuario_id is None:
+    st.title("🔒 Acceso Seguro")
+    st.write("Por favor, identifícate para ver tus finanzas.")
+    
+    col_login, _ = st.columns([1, 2])
+    with col_login:
+        with st.form("login_form"):
+            usuario_sel = st.selectbox("Usuario", ["Brandon", "Invitado"])
+            pin = st.text_input("PIN de acceso", type="password")
+            submit_login = st.form_submit_button("Entrar", type="primary")
+            
+            if submit_login:
+                res_login = supabase.table("usuarios").select("*").eq("nombre", usuario_sel).eq("pin_acceso", pin).execute()
+                if res_login.data:
+                    st.session_state.usuario_id = res_login.data[0]['id']
+                    st.session_state.usuario_nombre = res_login.data[0]['nombre']
+                    st.rerun()
+                else:
+                    st.error("❌ PIN incorrecto")
+    st.stop() # Detiene la ejecución para que no cargue el resto de la app si no estás logueado
 
-# --- BARRA LATERAL (FILTROS) ---
+# --- A PARTIR DE AQUÍ, LA APP SOLO CARGA SI ESTÁS LOGUEADO ---
+
+st.title(f"🚀 Panel Financiero - {st.session_state.usuario_nombre}")
+
+# --- BARRA LATERAL (FILTROS Y LOGOUT) ---
+st.sidebar.markdown(f"👤 **Conectado como:** {st.session_state.usuario_nombre}")
+if st.sidebar.button("Cerrar Sesión"):
+    st.session_state.usuario_id = None
+    st.session_state.usuario_nombre = None
+    st.rerun()
+    
+st.sidebar.divider()
 st.sidebar.header("📅 Filtro de Periodo")
 hoy = datetime.date.today()
 
@@ -57,11 +94,21 @@ def obtener_todas_las_categorias():
 
 todas_las_cat = obtener_todas_las_categorias()
 
+def obtener_ids_descendientes(id_padre, categorias_list):
+    hijos = [c['id'] for c in categorias_list if c.get('id_padre') == id_padre]
+    resultado = [id_padre] 
+    for hijo_id in hijos:
+        resultado.extend(obtener_ids_descendientes(hijo_id, categorias_list))
+    return list(set(resultado))
+
 def obtener_categorias_input(tipo):
+    ids_ingresos_rama = obtener_ids_descendientes(1, todas_las_cat)
+    ids_carpetas = [c.get('id_padre') for c in todas_las_cat if c.get('id_padre') is not None]
+    
     if tipo == "INGRESO":
-        return {c['nombre']: c['id'] for c in todas_las_cat if c.get('id_padre') == 1 and c.get('nivel') == 2}
+        return {c['nombre']: c['id'] for c in todas_las_cat if c.get('id_padre') == 1}
     else:
-        return {c['nombre']: c['id'] for c in todas_las_cat if c.get('nivel') == 4}
+        return {c['nombre']: c['id'] for c in todas_las_cat if c.get('id') not in ids_ingresos_rama and c.get('id') not in ids_carpetas}
 
 # --- RENDERIZADO PRINCIPAL ---
 st.divider()
@@ -102,8 +149,9 @@ with col_izq:
 with col_der:
     st.subheader(f"📊 Resumen de {mes_sel_nombre}")
     
-    res_metricas = supabase.table("registros").select("id, fecha, concepto, importe, detalles, metodo_pago, categoria_id, categorias(nombre)").gte("fecha", str(primer_dia_filtro)).lte("fecha", str(ultimo_dia_filtro)).order("fecha", desc=True).order("id", desc=True).execute()
-    res_prev = supabase.table("registros").select("importe, categoria_id, categorias(nombre)").gte("fecha", str(primer_dia_prev)).lte("fecha", str(ultimo_dia_prev)).execute()
+    # ⚠️ AÑADIDO FILTRO DE USUARIO (.eq("usuario_id", st.session_state.usuario_id))
+    res_metricas = supabase.table("registros").select("id, fecha, concepto, importe, detalles, metodo_pago, categoria_id, categorias(nombre)").eq("usuario_id", st.session_state.usuario_id).gte("fecha", str(primer_dia_filtro)).lte("fecha", str(ultimo_dia_filtro)).order("fecha", desc=True).order("id", desc=True).execute()
+    res_prev = supabase.table("registros").select("importe, categoria_id, categorias(nombre)").eq("usuario_id", st.session_state.usuario_id).gte("fecha", str(primer_dia_prev)).lte("fecha", str(ultimo_dia_prev)).execute()
     
     ids_ingresos = [c['id'] for c in todas_las_cat if c.get('id_padre') == 1]
     
@@ -205,7 +253,6 @@ if st.session_state.confirmando:
     d = st.session_state.datos_temp
     st.warning("⚠️ Revisa los datos antes de guardar:")
     
-    # --- ESTE ES EL BLOQUE QUE ME HABÍA COMIDO ---
     st.markdown(f"""
     - **Tipo:** {d['tipo']}
     - **Concepto:** {d['concepto']}
@@ -215,15 +262,16 @@ if st.session_state.confirmando:
     - **Método de Pago:** {d['metodo_pago'].capitalize()}
     - **Detalles:** {d['detalles'] if d['detalles'] else '-'}
     """)
-    # ---------------------------------------------
     
     col_ok, col_ko = st.columns([1, 5])
     with col_ok:
         if st.button("Confirmar registro", type="primary"):
             try:
+                # ⚠️ AÑADIDO: Al guardar, se vincula con el ID del usuario conectado
                 supabase.table("registros").insert({
                     "concepto": d['concepto'], "importe": d['importe'], "categoria_id": d['categoria_id'], 
-                    "fecha": d['fecha'], "detalles": d['detalles'], "metodo_pago": d['metodo_pago']
+                    "fecha": d['fecha'], "detalles": d['detalles'], "metodo_pago": d['metodo_pago'],
+                    "usuario_id": st.session_state.usuario_id
                 }).execute()
                 st.session_state.confirmando, st.session_state.datos_temp = False, None
                 st.session_state.mensaje_exito = "✅ Registrado correctamente."
@@ -235,19 +283,10 @@ if st.session_state.confirmando:
             st.session_state.confirmando, st.session_state.datos_temp = False, None
             st.rerun()
 
-# --- NUEVO: AUDITOR DE CATEGORÍAS AVANZADO (Árbol Jerárquico) ---
+# --- AUDITOR DE CATEGORÍAS AVANZADO ---
 st.divider()
 st.subheader(f"🔍 Auditor de Gastos Avanzado")
 
-# Buscador de hijos para filtrar
-def obtener_ids_descendientes(id_padre, categorias_list):
-    hijos = [c['id'] for c in categorias_list if c.get('id_padre') == id_padre]
-    resultado = [id_padre] 
-    for hijo_id in hijos:
-        resultado.extend(obtener_ids_descendientes(hijo_id, categorias_list))
-    return list(set(resultado))
-
-# NUEVA FUNCIÓN: Trepar por el árbol para agrupar por el hijo inmediato
 def obtener_nombre_hijo_directo(id_registro, id_padre_sel, lista_cat):
     if id_registro == id_padre_sel:
         cat = next((c for c in lista_cat if c['id'] == id_registro), None)
@@ -260,7 +299,6 @@ def obtener_nombre_hijo_directo(id_registro, id_padre_sel, lista_cat):
         cat_actual = next((c for c in lista_cat if c['id'] == cat_actual.get('id_padre')), None)
     return "Otros"
 
-# Preparamos el desplegable
 cat_solo_gastos = [c for c in todas_las_cat if c.get('id') not in ids_ingresos and c.get('id_padre') != 1]
 lista_nombres_cat = sorted([c['nombre'] for c in cat_solo_gastos])
 lista_opciones_cat = ["Todas"] + lista_nombres_cat
@@ -275,7 +313,6 @@ if filtro_seleccionado != "Todas":
     
     ids_a_filtrar = obtener_ids_descendientes(id_cat_sel, todas_las_cat)
     
-    # Filtramos los registros
     registros_actuales = [r for r in res_metricas.data if r['categoria_id'] in ids_a_filtrar] if res_metricas.data else []
     registros_previos = [r for r in res_prev.data if r['categoria_id'] in ids_a_filtrar] if res_prev.data else []
     
@@ -311,7 +348,6 @@ if filtro_seleccionado != "Todas":
         if registros_actuales:
             st.markdown(f"##### 📊 Estructura del Gasto")
             
-            # Desglose agrupado por el HIJO INMEDIATO del bloque seleccionado
             desglose = {}
             for r in registros_actuales:
                 nom_agrupado = obtener_nombre_hijo_directo(r['categoria_id'], id_cat_sel, todas_las_cat)
@@ -350,14 +386,13 @@ if filtro_seleccionado != "Todas":
         else:
             st.info(f"No hay movimientos de {filtro_seleccionado} este mes.")
 
-st.write("") # Espaciado
+st.write("") 
 
 # --- TABLA DE HISTORIAL FILTRADA ---
 def mostrar_tabla_avanzada(res_data, ids_permitidos, filtro_activo):
     if res_data:
         df_list = []
         for r in res_data:
-            # Si el filtro está activo, solo mostramos si el ID está en la lista de permitidos
             if filtro_activo != "Todas" and r['categoria_id'] not in ids_permitidos:
                 continue
                 
@@ -384,14 +419,37 @@ def mostrar_tabla_avanzada(res_data, ids_permitidos, filtro_activo):
     else:
         st.info("No hay registros en la base de datos para este mes.")
 
-# Le pasamos los datos que ya consultó la app arriba para no hacer peticiones dobles a Supabase
 mostrar_tabla_avanzada(res_metricas.data, ids_a_filtrar, filtro_seleccionado)
 
-with st.expander("⚠️ Zona de Peligro: Eliminar un registro"):
-    res_del = supabase.table("registros").select("id, concepto, importe, fecha").order("id", desc=True).limit(10).execute()
+# --- ZONA DE GESTIÓN (BORRADO) ---
+with st.expander("🛠️ Gestión de Historial (Borrado)"):
+    # ⚠️ AÑADIDO FILTRO DE USUARIO PARA QUE SOLO PUEDA BORRAR LO SUYO
+    res_del = supabase.table("registros").select("id, concepto, importe, fecha").eq("usuario_id", st.session_state.usuario_id).order("id", desc=True).limit(15).execute()
+    
     if res_del.data:
-        opciones_borrar = {f"[{r['fecha']}] {r['concepto']} - {r['importe']}€ (ID: {r['id']})": r['id'] for r in res_del.data}
-        registro_a_borrar = st.selectbox("Selecciona movimiento:", options=list(opciones_borrar.keys()))
-        if st.button("🗑️ Eliminar definitivamente"):
-            supabase.table("registros").delete().eq("id", opciones_borrar[registro_a_borrar]).execute()
-            st.rerun()
+        opciones_borrar = {f"[{r['fecha']}] {r['concepto']} - {r['importe']}€": r['id'] for r in res_del.data}
+        registro_seleccionado = st.selectbox("Selecciona movimiento a eliminar:", options=list(opciones_borrar.keys()))
+        id_seleccionado = opciones_borrar[registro_seleccionado]
+        
+        if st.session_state.id_a_borrar != id_seleccionado:
+            if st.button("🗑️ Eliminar registro"):
+                st.session_state.id_a_borrar = id_seleccionado
+                st.rerun()
+        else:
+            st.error("⚠️ ¿Estás totalmente seguro? Esta acción no se puede deshacer.")
+            col1, col2 = st.columns([1, 4])
+            with col1:
+                if st.button("✅ Sí, borrar", type="primary"):
+                    try:
+                        supabase.table("registros").delete().eq("id", id_seleccionado).execute()
+                        st.session_state.id_a_borrar = None
+                        st.session_state.mensaje_exito = "🗑️ Registro eliminado correctamente."
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"Error al borrar: {e}")
+            with col2:
+                if st.button("❌ Cancelar"):
+                    st.session_state.id_a_borrar = None
+                    st.rerun()
+    else:
+        st.info("No hay registros recientes para eliminar.")
